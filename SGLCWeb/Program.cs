@@ -11,6 +11,7 @@ public static class Program
 {
 	const string ApiKey = "B31BA9A9C29FC66CD0174F8BC2A176D8";
 	const string SteamApiUrl = @"https://store.steampowered.com/api";
+	public const string AppName = "steamlibcomparer";
 
 	public static HttpClient client = new();
 	static SteamWebInterfaceFactory interfaceFactory;
@@ -22,6 +23,11 @@ public static class Program
 	{
 		if ( !debug ) return;
 		Console.WriteLine( info );
+	}
+
+	public static void ClickedSubmit()
+	{
+		Log( "Hellooooo" );
 	}
 
 	public static void Main( string[] args )

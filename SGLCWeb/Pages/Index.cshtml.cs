@@ -7,6 +7,9 @@ namespace SGLCWeb.Pages
 	{
 		private readonly ILogger<IndexModel> _logger;
 
+		[BindProperty( SupportsGet = true )]
+		public string IdList { get; set; }
+
 		public IndexModel( ILogger<IndexModel> logger )
 		{
 			_logger = logger;
@@ -14,7 +17,15 @@ namespace SGLCWeb.Pages
 
 		public void OnGet()
 		{
+		}
 
+		public async Task<IActionResult> OnPostAsync()
+		{
+			if ( string.IsNullOrEmpty(IdList) )
+				return Page();
+
+			GroupLibCompare.Program.Log( IdList );
+			return Page();
 		}
 	}
 }

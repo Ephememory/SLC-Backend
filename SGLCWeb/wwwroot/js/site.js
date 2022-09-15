@@ -4,8 +4,11 @@
 // Write your JavaScript code.
 
 window.onload = function () {
-    let testButton = document.getElementById("test-button");
-    testButton.addEventListener("click", (event) => {
-        alert("you clicked it!");
-    });
+    let myForm = document.getElementById("steam-id-list-input");
+    if (myForm == undefined)
+        alert('fuckup');
+
+    myForm.onsubmit = function (ev) {
+        alert();
+    }
 }
