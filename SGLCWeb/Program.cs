@@ -10,24 +10,20 @@ public readonly record struct UserGameLibrary( PlayerSummaryModel Player, IEnume
 public static class Program
 {
 	const string ApiKey = "B31BA9A9C29FC66CD0174F8BC2A176D8";
-	const string SteamApiUrl = @"https://store.steampowered.com/api";
+	public const string ApiBaseUrl = "https://store.steampowered.com/api";
 	public const string AppName = "steamlibcomparer";
 
 	public static HttpClient client = new();
 	static SteamWebInterfaceFactory interfaceFactory;
 	static SteamUser steamInterface;
 	static PlayerService playerService;
+	static SteamStore storeService;
 	static bool debug = true;
 
 	internal static void Log( object info )
 	{
 		if ( !debug ) return;
 		Console.WriteLine( info );
-	}
-
-	public static void ClickedSubmit()
-	{
-		Log( "Hellooooo" );
 	}
 
 	public static void Main( string[] args )
@@ -37,6 +33,7 @@ public static class Program
 
 		steamInterface = interfaceFactory.CreateSteamWebInterface<SteamUser>( new HttpClient() );
 		playerService = interfaceFactory.CreateSteamWebInterface<PlayerService>( new HttpClient() );
+		storeService = interfaceFactory.CreateSteamStoreInterface( new HttpClient() );
 
 		var builder = WebApplication.CreateBuilder( args );
 
@@ -61,7 +58,7 @@ public static class Program
 		app.Run();
 	}
 
-	public static async Task DoGroupLookup( List<ulong> steamids )
+	public static async Task<IEnumerable<GameWithOwners>> DoGroupLookup( List<ulong> steamids )
 	{
 		// Fetch their profiles.
 		var summariesResponse = await steamInterface.GetPlayerSummariesAsync( steamids );
@@ -82,6 +79,28 @@ public static class Program
 		}
 
 		var gamesInCommon = GetGamesInCommon( users );
+		return gamesInCommon;
+
+		// Here's some fucking epic cringe.
+		// Ok so steam has that problem where it asks you for your DOB for random fucking games.
+		// (I think its european bullshit as usual).
+		// The problem is, SteamWebAPI2 just fucking shits the bed if you ask for store details
+		// about an app that has this age verification check. It SHOULD just handle the return,
+		// (the Steam API does still at least return valid json even with the DOB failure).
+
+		//var namesGamesInCommon = new List<string>( gamesInCommon.Count() );
+		//foreach ( var game in gamesInCommon )
+		//{
+		//	var response = await storeService.GetStoreAppDetailsAsync( game.Appid );
+		//	if ( response == null )
+		//	{
+		//		Log( "Error!" );
+		//		return null;
+		//	}
+
+		//	namesGamesInCommon.Add( response.Name );
+		//}
+
 		foreach ( var game in gamesInCommon )
 		{
 			Log( $"AppId: {game.Appid}" );
