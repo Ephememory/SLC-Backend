@@ -1,4 +1,4 @@
-﻿using SteamWebAPI2.Utilities;
+using SteamWebAPI2.Utilities;
 using SteamWebAPI2.Interfaces;
 using Steam.Models.SteamCommunity;
 
@@ -12,16 +12,11 @@ public static class Program
 	const string ApiKey = "B31BA9A9C29FC66CD0174F8BC2A176D8";
 	const string SteamApiUrl = @"https://store.steampowered.com/api";
 
-	static List<ulong> TestGroup = new List<ulong>() { 76561197998255119, 76561198185968451, 76561198010611322, 76561198020181420 };
-
 	public static HttpClient client = new();
 	static SteamWebInterfaceFactory interfaceFactory;
 	static SteamUser steamInterface;
 	static PlayerService playerService;
 	static bool debug = true;
-
-	// A lot of this can/will be optimised by just using AppIds instead of
-	// passing around the entire OwnedGameModel instances.
 
 	internal static void Log( object info )
 	{
@@ -29,17 +24,42 @@ public static class Program
 		Console.WriteLine( info );
 	}
 
-	public async static Task Main()
+	public static void Main( string[] args )
 	{
 		// Initialize all the SteamWebAPI2 stuff.
 		interfaceFactory = new SteamWebInterfaceFactory( ApiKey );
-	
+
 		steamInterface = interfaceFactory.CreateSteamWebInterface<SteamUser>( new HttpClient() );
 		playerService = interfaceFactory.CreateSteamWebInterface<PlayerService>( new HttpClient() );
 
+		var builder = WebApplication.CreateBuilder( args );
+
+		// Add services to the container.
+		builder.Services.AddRazorPages();
+
+		var app = builder.Build();
+
+		// Configure the HTTP request pipeline.
+		if ( !app.Environment.IsDevelopment() )
+		{
+			app.UseExceptionHandler( "/Error" );
+			// The default HSTS value is 30 days. You may want to change this for production scenarios, see https://aka.ms/aspnetcore-hsts.
+			app.UseHsts();
+		}
+
+		app.UseHttpsRedirection();
+		app.UseStaticFiles();
+		app.UseRouting();
+		app.UseAuthorization();
+		app.MapRazorPages();
+		app.Run();
+	}
+
+	public static async Task DoGroupLookup( List<ulong> steamids )
+	{
 		// Fetch their profiles.
-		var summariesResponse = await steamInterface.GetPlayerSummariesAsync( TestGroup );
-		
+		var summariesResponse = await steamInterface.GetPlayerSummariesAsync( steamids );
+
 		var summaries = summariesResponse.Data;
 
 		var users = new List<UserGameLibrary>();
@@ -50,7 +70,7 @@ public static class Program
 			// for each game's app id to fetch info for showing a pretty display for the front-end.
 			// Maybe we can do all that on the front-end, just send app ids from here.
 			// E.g. displaying the game logo/store page thumbnail.
-		
+
 			var response = await playerService.GetOwnedGamesAsync( player.SteamId, includeAppInfo: true, includeFreeGames: false );
 			users.Add( new UserGameLibrary( player, response.Data.OwnedGames ) );
 		}
