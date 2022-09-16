@@ -2,11 +2,21 @@ using SteamWebAPI2.Utilities;
 using SteamWebAPI2.Interfaces;
 using Steam.Models.SteamCommunity;
 using System.Text;
+using Microsoft.AspNetCore.Cors.Infrastructure;
+using System.Net;
+using System.Text.Json;
 
 namespace SLC;
 
-public readonly record struct GameWithOwners( uint Appid, List<ulong> Owners );
-public readonly record struct UserGameLibrary( PlayerSummaryModel Player, IEnumerable<OwnedGameModel> Library );
+internal readonly record struct GameWithOwners( uint Appid, List<ulong> Owners );
+internal readonly record struct UserGameLibrary( PlayerSummaryModel Player, IEnumerable<OwnedGameModel> Library );
+
+/// <summary>
+/// We are assuming the front-end app has ensured this is usable data as much as possible but we
+/// obviously will do back-end checks here too.
+/// </summary>
+/// <param name="idList"></param>
+internal record struct SteamUserCompareQuery( int userCount, ulong[] idList );
 
 public static class Program
 {
@@ -42,6 +52,14 @@ public static class Program
 		// Add services to the container.
 		// Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle
 
+		// CORS...
+		builder.Services.AddCors( o => o.AddPolicy( "MyPolicy", builder =>
+		{
+			builder.AllowAnyOrigin()
+			.AllowAnyMethod()
+			.AllowAnyHeader();
+		} ) );
+
 		//builder.Services.AddEndpointsApiExplorer();
 		//builder.Services.AddSwaggerGen();
 
@@ -53,8 +71,31 @@ public static class Program
 		}
 
 		app.UseHttpsRedirection();
+		app.UseCors( "MyPolicy" );
 
-		app.MapPost( "/idlist", HandleFormPost );
+
+		app.MapPost( "/idlist", async ( context ) =>
+		{
+			Console.WriteLine( "POST received" );
+
+			if ( !context.Request.HasJsonContentType() )
+			{
+				context.Response.StatusCode = (int)HttpStatusCode.UnsupportedMediaType;
+				return;
+			}
+
+			var query = await context.Request.ReadFromJsonAsync<SteamUserCompareQuery>();
+
+			if ( query.userCount < 0 )
+			{
+				context.Response.StatusCode = (int)HttpStatusCode.InternalServerError;
+				return;
+			}
+
+			IEnumerable<GameWithOwners> games = await DoGroupLookup( query );
+			await context.Response.WriteAsJsonAsync<List<GameWithOwners>>( games.ToList() );
+
+		} );
 
 		app.MapGet( "/testdata", () =>
 		{
@@ -66,43 +107,10 @@ public static class Program
 		app.Run();
 	}
 
-	internal static async void HandleFormPost( string idList )
-	{
-		Console.WriteLine( "Received POST request." );
-
-		if ( string.IsNullOrEmpty( idList ) )
-			return;
-
-		var processedList = idList.Split( " " );
-		var steamIds = new List<ulong>( processedList.Length );
-
-		foreach ( var i in processedList )
-		{
-			steamIds.Add( ulong.Parse( i ) );
-		}
-
-		IEnumerable<GameWithOwners> games = await DoGroupLookup( steamids: steamIds );
-
-		StringBuilder output = new();
-		foreach ( var game in games )
-			output.Append( $"{game.Appid}\n" );
-
-		//var c = new HttpClient();
-		//var output = new StringBuilder();
-		//foreach ( var game in games )
-		//{
-		//	StoreAppDetailsDataModel x = await c.GetFromJsonAsync<StoreAppDetailsDataModel>( $"https://store.steampowered.com/api/appdetails?appids={game.Appid}" );
-		//	if ( x != null )
-		//		output.Append( $"{x.Name}\n" );
-		//	else
-		//		output.Append( game.Appid );
-		//}
-	}
-
-	internal static async Task<IEnumerable<GameWithOwners>> DoGroupLookup( List<ulong> steamids )
+	internal static async Task<IEnumerable<GameWithOwners>> DoGroupLookup( SteamUserCompareQuery query )
 	{
 		// Fetch their profiles.
-		var summariesResponse = await steamInterface.GetPlayerSummariesAsync( steamids );
+		var summariesResponse = await steamInterface.GetPlayerSummariesAsync( query.idList );
 
 		var summaries = summariesResponse.Data;
 
@@ -120,6 +128,16 @@ public static class Program
 		}
 
 		var gamesInCommon = GetGamesInCommon( users );
+
+		foreach ( var game in gamesInCommon )
+		{
+			Log( $"AppId: {game.Appid}" );
+			foreach ( var value in game.Owners )
+			{
+				Log( $"owned by: {value} " );
+			}
+		}
+
 		return gamesInCommon;
 
 		// Ok so steam has that problem where it asks you for your DOB for some games.
@@ -141,14 +159,6 @@ public static class Program
 		//	namesGamesInCommon.Add( response.Name );
 		//}
 
-		foreach ( var game in gamesInCommon )
-		{
-			Log( $"AppId: {game.Appid}" );
-			foreach ( var value in game.Owners )
-			{
-				Log( $"owned by: {value} " );
-			}
-		}
 	}
 
 	internal static IEnumerable<GameWithOwners> GetGamesInCommon( IEnumerable<UserGameLibrary> users )
