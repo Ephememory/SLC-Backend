@@ -10,6 +10,7 @@ namespace SLC;
 
 internal readonly record struct GameWithOwners( uint Appid, List<ulong> Owners );
 internal readonly record struct UserGameLibrary( PlayerSummaryModel Player, IEnumerable<OwnedGameModel> Library );
+internal readonly record struct TestData( string? message, DateTime time );
 
 /// <summary>
 /// We are assuming the front-end app has ensured this is usable data as much as possible but we
@@ -18,39 +19,56 @@ internal readonly record struct UserGameLibrary( PlayerSummaryModel Player, IEnu
 /// <param name="idList"></param>
 internal record struct SteamUserCompareQuery( int userCount, ulong[] idList );
 
+internal sealed class InvalidSteamAPIKeyException : Exception
+{
+	internal InvalidSteamAPIKeyException( string? message ) : base( message ) { }
+}
+
 public static class Program
 {
-	internal const string ApiKey = "B31BA9A9C29FC66CD0174F8BC2A176D8";
 	public const string ApiBaseUrl = "https://store.steampowered.com/api";
 	public const string AppName = "steamlibcomparer";
 
 	internal static HttpClient client = new();
 
-	internal static SteamWebInterfaceFactory interfaceFactory;
-	internal static SteamUser steamInterface;
-	internal static PlayerService playerService;
-	internal static SteamStore storeService;
-	internal static bool debug = true;
+	internal static SteamWebInterfaceFactory _steamInterfaceFactory;
+	internal static SteamUser _steamUser;
+	internal static PlayerService _playerService;
+	internal static SteamStore _storeService;
 
-	internal static void Log( object info )
+	internal static bool _logDebug = false;
+	internal static bool _verboseDebug = false;
+
+	internal static void Log( object? info )
 	{
-		if ( !debug ) return;
+		if ( !_logDebug ) return;
+		if ( info == null ) return;
 		Console.WriteLine( info );
 	}
 
 	public static void Main( string[] args )
 	{
-		// Initialize all the SteamWebAPI2 stuff.
-		interfaceFactory = new SteamWebInterfaceFactory( ApiKey );
+		// Parse ENV Vars to ints.
+		_verboseDebug = int.TryParse( Environment.GetEnvironmentVariable( "verbose" ), out var verboseInt ) && verboseInt > 0;
 
-		steamInterface = interfaceFactory.CreateSteamWebInterface<SteamUser>( new HttpClient() );
-		playerService = interfaceFactory.CreateSteamWebInterface<PlayerService>( new HttpClient() );
-		storeService = interfaceFactory.CreateSteamStoreInterface( new HttpClient() );
+		// Override _logDebug if verbose is on.
+		_logDebug = _verboseDebug ? 
+			_verboseDebug : int.TryParse( Environment.GetEnvironmentVariable( "log" ), out int logInt ) && logInt > 0;
+
+		var apiKey = Environment.GetEnvironmentVariable( "STEAM_WEB_API_KEY" );
+		if ( string.IsNullOrEmpty( apiKey ) )
+		{
+			throw new InvalidSteamAPIKeyException( "Steam Web API Key not set/found in env vars." );
+		}
+
+		// Initialize all the SteamWebAPI2 stuff.
+		_steamInterfaceFactory = new SteamWebInterfaceFactory( apiKey );
+
+		_steamUser = _steamInterfaceFactory.CreateSteamWebInterface<SteamUser>( new HttpClient() );
+		_playerService = _steamInterfaceFactory.CreateSteamWebInterface<PlayerService>( new HttpClient() );
+		_storeService = _steamInterfaceFactory.CreateSteamStoreInterface( new HttpClient() );
 
 		var builder = WebApplication.CreateBuilder( args );
-
-		// Add services to the container.
-		// Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle
 
 		// CORS...
 		builder.Services.AddCors( o => o.AddPolicy( "MyPolicy", builder =>
@@ -59,9 +77,6 @@ public static class Program
 			.AllowAnyMethod()
 			.AllowAnyHeader();
 		} ) );
-
-		//builder.Services.AddEndpointsApiExplorer();
-		//builder.Services.AddSwaggerGen();
 
 		var app = builder.Build();
 
@@ -73,7 +88,7 @@ public static class Program
 		app.UseHttpsRedirection();
 		app.UseCors( "MyPolicy" );
 
-
+		// POST endpoint for submitting the id list.
 		app.MapPost( "/idlist", async ( context ) =>
 		{
 			Console.WriteLine( "POST received" );
@@ -92,81 +107,43 @@ public static class Program
 				return;
 			}
 
-			IEnumerable<GameWithOwners> games = await DoGroupLookup( query );
-			await context.Response.WriteAsJsonAsync<List<GameWithOwners>>( games.ToList() );
+			// TODO: We'll need to handle errors/NREs for failed respones.
+			// I think steamwebapi2 doesn't do good null-handling...
+			// Might need to surround with pragmas to prevent failure shutdown.
 
+			// Fetch their profiles.
+			var summariesResponse = await _steamUser.GetPlayerSummariesAsync( query.idList );
+			var summaries = summariesResponse.Data;
+			var users = new List<UserGameLibrary>();
+
+			foreach ( var player in summaries )
+			{
+				// includeAppInfo: true to get stuff like the names of the games. Yes that isn't included by default.
+				var response = await _playerService.GetOwnedGamesAsync( player.SteamId, includeAppInfo: true, includeFreeGames: false );
+				users.Add( new UserGameLibrary( player, response.Data.OwnedGames ) );
+			}
+
+			IEnumerable<GameWithOwners> games = GetGamesInCommon( users );
+			await context.Response.WriteAsJsonAsync<List<GameWithOwners>>( games.ToList() );
 		} );
 
+		// GET test.
 		app.MapGet( "/testdata", () =>
 		{
-			Console.WriteLine( "request received" );
-			var testData = "hello world!!";
+			Log( "GET received in /testdata" );
+			var testData = new TestData( "Hello from SLC-Backend", DateTime.Now );
 			return testData;
 		} );
 
 		app.Run();
 	}
 
-	internal static async Task<IEnumerable<GameWithOwners>> DoGroupLookup( SteamUserCompareQuery query )
-	{
-		// Fetch their profiles.
-		var summariesResponse = await steamInterface.GetPlayerSummariesAsync( query.idList );
-
-		var summaries = summariesResponse.Data;
-
-		var users = new List<UserGameLibrary>();
-		foreach ( var player in summaries )
-		{
-			// includeAppInfo: true to get stuff like the names of the games. Yes that isn't included by default.
-			// We might have to also just make another service api request
-			// for each game's app id to fetch info for showing a pretty display for the front-end.
-			// Maybe we can do all that on the front-end, just send app ids from here.
-			// E.g. displaying the game logo/store page thumbnail.
-
-			var response = await playerService.GetOwnedGamesAsync( player.SteamId, includeAppInfo: true, includeFreeGames: false );
-			users.Add( new UserGameLibrary( player, response.Data.OwnedGames ) );
-		}
-
-		var gamesInCommon = GetGamesInCommon( users );
-
-		foreach ( var game in gamesInCommon )
-		{
-			Log( $"AppId: {game.Appid}" );
-			foreach ( var value in game.Owners )
-			{
-				Log( $"owned by: {value} " );
-			}
-		}
-
-		return gamesInCommon;
-
-		// Ok so steam has that problem where it asks you for your DOB for some games.
-		// (I think its a European law thing?)
-		// The problem is, SteamWebAPI2 just fucking shits the bed if you ask for store details
-		// about an app that has this age verification check. It SHOULD just handle the return,
-		// (the Steam API does still at least return valid json even with the DOB failure).
-
-		//var namesGamesInCommon = new List<string>( gamesInCommon.Count() );
-		//foreach ( var game in gamesInCommon )
-		//{
-		//	var response = await storeService.GetStoreAppDetailsAsync( game.Appid );
-		//	if ( response == null )
-		//	{
-		//		Log( "Error!" );
-		//		return null;
-		//	}
-
-		//	namesGamesInCommon.Add( response.Name );
-		//}
-
-	}
-
 	internal static IEnumerable<GameWithOwners> GetGamesInCommon( IEnumerable<UserGameLibrary> users )
 	{
-		// TODO: Error handle, nullable return.
-		// Web-related stuff always makes me wish C# had multiple returns like Go, for easier error handling.
+		if ( users.Count() < 0 )
+			throw new Exception( "UserGameLibrary list is empty." );
 
-		var gameOwnerDict = new Dictionary<uint, List<ulong>>();
+		var gamesAndOwners = new Dictionary<uint, List<ulong>>();
 		foreach ( var user in users )
 		{
 			Log( $"Processing user --- SteamId: {user.Player.SteamId} NickName: {user.Player.Nickname}." );
@@ -174,24 +151,36 @@ public static class Program
 
 			foreach ( var game in user.Library )
 			{
-				if ( gameOwnerDict.ContainsKey( game.AppId ) )
-					gameOwnerDict[game.AppId].Add( user.Player.SteamId );
+				if ( gamesAndOwners.ContainsKey( game.AppId ) )
+					gamesAndOwners[game.AppId].Add( user.Player.SteamId );
 				else
-					gameOwnerDict.Add( game.AppId, new List<ulong>() { user.Player.SteamId } );
+					gamesAndOwners.Add( game.AppId, new List<ulong>() { user.Player.SteamId } );
 			}
 		}
 
-		Log( $"Collective virtual library size (all users combined): {gameOwnerDict.Count()} games." );
+		Log( $"Collective virtual library size (all users combined): {gamesAndOwners.Count()} games." );
 
 		// Process the dictionary, make a list that only includes the games owned by multiple users.
 		var processedOwners = new List<GameWithOwners>();
-		foreach ( KeyValuePair<uint, List<ulong>> kvp in gameOwnerDict )
+		foreach ( KeyValuePair<uint, List<ulong>> kvp in gamesAndOwners )
 		{
 			// The game does not have multiple owners.
 			if ( kvp.Value.Count <= 1 )
 				continue;
 
 			processedOwners.Add( new GameWithOwners( kvp.Key, kvp.Value ) );
+		}
+
+		if ( _verboseDebug )
+		{
+			foreach ( var game in processedOwners )
+			{
+				Log( $"AppId: {game.Appid}" );
+				foreach ( var value in game.Owners )
+				{
+					Log( $"Owned by: {value} " );
+				}
+			}
 		}
 
 		return processedOwners;
